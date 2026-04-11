@@ -86,17 +86,17 @@ function Animator:LoadAnimation(Rig, KeyframeSequence)
 		
 		task.spawn(function()
 			wait(1/60)
-			if FadeIn \~= nil then
+			if FadeIn ~= nil then
 				Class.TimePosition -= FadeIn
 			end
 			
 			repeat game:GetService("RunService").Heartbeat:Wait()
 				Class.TimePosition += (1 * Class.Speed) / (60 * Class.Speed) 
-			until Class.IsPlaying == false or Class.Stopped \~= false
+			until Class.IsPlaying == false or Class.Stopped ~= false
 		end)
 		
 		task.spawn(function()
-			if FadeIn \~= nil then
+			if FadeIn ~= nil then
 				task.wait(1/55)
 				task.spawn(function()
 					local Frames = Keyframes[1]:GetDescendants()
@@ -124,8 +124,8 @@ function Animator:LoadAnimation(Rig, KeyframeSequence)
 			repeat
 				for K = 1, #Keyframes do 
 					local K0, K1, K2 = Keyframes[K-1], Keyframes[K], Keyframes[K+1]
-					if Class.Stopped \~= true then
-						if K0 \~= nil then 
+					if Class.Stopped ~= true then
+						if K0 ~= nil then 
 							local Yield = function(Seconds)
 								local Time = Seconds * (60 + Class.Length)
 								for i = 1, Time, Class.Speed do 
@@ -139,7 +139,7 @@ function Animator:LoadAnimation(Rig, KeyframeSequence)
 							for i = 1, #(K1:GetDescendants()) do 
 								local Pose = K1:GetDescendants()[i]
 								if Contains(Joints, Pose.Name) then 
-									local Duration = K2 \~= nil and (K2.Time - K1.Time) / Class.Speed or 0.5
+									local Duration = K2 ~= nil and (K2.Time - K1.Time) / Class.Speed or 0.5
 									Edit(Joints[Pose.Name], AnimDefaults[Pose.Name] * Pose.CFrame, Duration, Pose.EasingStyle, Pose.EasingDirection)
 								end
 							end
@@ -161,7 +161,7 @@ function Animator:LoadAnimation(Rig, KeyframeSequence)
 					end
 				end
 				Completion:Fire()
-			until Class.Looped \~= true or Class.Stopped \~= false
+			until Class.Looped ~= true or Class.Stopped ~= false
 			
 			Class.IsPlaying = false
 		end)
