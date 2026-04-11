@@ -1,24 +1,29 @@
 --[[
-	Usage Example:
-	
-	local Animator = loadstring(game:HttpGet("PASTE_THE_FULL_SCRIPT_HERE"))()
-	
-	local Rig = workspace.YourRig
-	local KeyframeSequence = game.ReplicatedStorage.YourKeyframeSequence
-	
-	local anim = Animator:LoadAnimation(Rig, KeyframeSequence)
-	
-	anim:Play()                    -- normal play
-	-- anim:Play(0.5)              -- fade in time in seconds
-	-- anim:Play(0, 1.5)           -- fade in, custom speed
-	-- anim:AdjustSpeed(2)
-	-- anim:Stop()
-	
-	anim.Completed:Connect(function() print("Animation finished") end)
-	anim.KeyframeReached:Connect(function(name) print("Reached:", name) end)
+USAGE EXAMPLE:
+
+local Animator = LoadAnimation(workspace.Dummy, game.ReplicatedStorage:WaitForChild("YourKeyframeSequence"))
+
+Animator:Play(0.2, 1)
+
+-- Stop animation
+Animator:Stop()
+
+-- Change speed
+Animator:AdjustSpeed(2)
+
+-- Detect keyframes
+Animator.KeyframeReached:Connect(function(name)
+	print("Reached:", name)
+end)
+
+-- Detect completion
+Animator.Completed:Connect(function()
+	print("Animation finished")
+end)
 ]]
 
-local Animator = {}
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
 
 local function Contains(Table, Check)
 	for Index, Value in next, Table do 
@@ -29,152 +34,169 @@ local function Contains(Table, Check)
 	return false
 end
 
-local function Edit(Joint, TargetCFrame, Duration, Style, Direction)
-	Style = Style or Enum.EasingStyle.Linear
-	Direction = Direction or Enum.EasingDirection.InOut
-	
-	local Property = Joint:IsA("Motor6D") and "Transform" or "CFrame"
-	
-	local TweenInfo = TweenInfo.new(Duration, Style, Direction)
-	local Goal = {[Property] = TargetCFrame}
-	
-	local Anim = game:GetService("TweenService"):Create(Joint, TweenInfo, Goal)
-	Anim:Play()
-	return Anim
+local function EditJoint(Joint, Change, Duration, Style, Direction, IsMotor)
+	Style = Enum.EasingStyle.Linear
+	Direction = Enum.EasingDirection.InOut
+
+	local goal = IsMotor and {Transform = Change} or {CFrame = Change}
+	local anim = TweenService:Create(Joint, TweenInfo.new(Duration, Style, Direction), goal)
+	anim:Play()
+	return anim
 end
 
-function Animator:LoadAnimation(Rig, KeyframeSequence)
-	local AnimDefaults = {}
+function LoadAnimation(Rig, KeyframeSequence)
+	local Defaults = {}
 	local Joints = {}
-	
+	local IsMotor = {}
+
 	for _, v in pairs(Rig:GetDescendants()) do
-		if v:IsA("Bone") or v:IsA("Motor6D") then
-			-- Store default pose
-			if v:IsA("Motor6D") then
-				AnimDefaults[v.Name] = v.Transform
-			else
-				AnimDefaults[v.Name] = v.CFrame
-			end
+		if v:IsA("Bone") then
+			Defaults[v.Name] = v.CFrame
 			Joints[v.Name] = v
+			IsMotor[v.Name] = false
+		elseif v:IsA("Motor6D") then
+			Defaults[v.Name] = v.Transform
+			Joints[v.Name] = v
+			IsMotor[v.Name] = true
 		end
 	end
-	
+
 	assert(KeyframeSequence:IsA("KeyframeSequence"), "KeyframeSequence Missing!")
-	
+
 	local Class = {}
 	Class.Speed = 1
 	Class.KeepLast = 0
-	
+
 	local Keyframes = KeyframeSequence:GetKeyframes()
 	table.sort(Keyframes, function(a, b) return a.Time < b.Time end)
-	
+
 	Class.Length = Keyframes[#Keyframes].Time
-	
+
+	local function Yield(sec)
+		local t = sec * (60 + Class.Length)
+		for _ = 1, t, Class.Speed do
+			task.wait()
+		end
+	end
+
 	Class.Stopped = true
 	Class.IsPlaying = false
 	Class.TimePosition = 0
 	Class.Looped = KeyframeSequence.Loop
-	
+
 	local Completion = Instance.new("BindableEvent")
 	local Reached = Instance.new("BindableEvent")
+
 	Class.Completed = Completion.Event
 	Class.KeyframeReached = Reached.Event
-	
-	Class["Play"] = function(self, FadeIn, Speed)
+
+	function Class:Play(FadeIn, Speed)
 		if Speed and Speed < 0 then
-			Speed = Speed + (Speed * 2)
+			Speed += (Speed * 2)
 		end
+
 		Class.Speed = Speed or Class.Speed
 		Class.Stopped = false
 		Class.IsPlaying = true
-		
+
 		task.spawn(function()
 			task.wait(1/60)
-			if FadeIn ~= nil then
+
+			if FadeIn then
 				Class.TimePosition -= FadeIn
 			end
+
+			Class.Completed:Connect(function()
+				if Class.Looped then
+					Class.TimePosition = 0
+				end
+			end)
+
 			repeat
-				game:GetService("RunService").Heartbeat:Wait()
-				Class.TimePosition += Class.Speed / 60
+				RunService.Heartbeat:Wait()
+				Class.TimePosition += (1 * Class.Speed) / (60 * Class.Speed)
 			until not Class.IsPlaying or Class.Stopped
 		end)
-		
+
 		task.spawn(function()
-			local function Yield(Seconds)
-				if Seconds <= 0 then return end
-				local Time = Seconds * 60
-				for i = 1, Time, Class.Speed do
-					task.wait()
-				end
-			end
-			
-			if FadeIn ~= nil then
+			if FadeIn then
 				task.wait(1/55)
-				local FirstKeyframe = Keyframes[1]
-				for _, Pose in pairs(FirstKeyframe:GetDescendants()) do
-					if Pose:IsA("Pose") and Contains(Joints, Pose.Name) then
-						local Joint = Joints[Pose.Name]
-						local Default = AnimDefaults[Pose.Name]
-						local Target = Default * Pose.CFrame
+
+				local frames = Keyframes[1]:GetDescendants()
+				for _, pose in pairs(frames) do
+					if Contains(Joints, pose.Name) then
 						task.spawn(function()
-							Edit(Joint, Target, FadeIn, Pose.EasingStyle, Pose.EasingDirection)
+							for _ = 1, 2 do
+								EditJoint(
+									Joints[pose.Name],
+									Defaults[pose.Name] * pose.CFrame,
+									FadeIn,
+									pose.EasingStyle,
+									pose.EasingDirection,
+									IsMotor[pose.Name]
+								)
+								task.wait()
+							end
 						end)
 					end
 				end
+
 				Yield(FadeIn)
 			end
-			
+
 			repeat
-				for K = 1, #Keyframes do
-					local K0 = Keyframes[K-1]
-					local K1 = Keyframes[K]
-					local K2 = Keyframes[K+1]
-					
-					if Class.Stopped then break end
-					
-					if K0 then
-						Yield(K1.Time - K0.Time)
-					end
-					
-					task.spawn(function()
-						for _, Pose in pairs(K1:GetDescendants()) do
-							if Pose:IsA("Pose") and Contains(Joints, Pose.Name) then
-								local Joint = Joints[Pose.Name]
-								local Default = AnimDefaults[Pose.Name]
-								local Target = Default * Pose.CFrame
-								local Duration = K2 and (K2.Time - K1.Time) / Class.Speed or 0.3
-								
-								Edit(Joint, Target, Duration, Pose.EasingStyle, Pose.EasingDirection)
+				for k = 1, #Keyframes do
+					local K0 = Keyframes[k-1]
+					local K1 = Keyframes[k]
+					local K2 = Keyframes[k+1]
+
+					if not Class.Stopped then
+						if K0 then
+							Yield(K1.Time - K0.Time)
+						end
+
+						for _, pose in pairs(K1:GetDescendants()) do
+							if Contains(Joints, pose.Name) then
+								local duration = K2 and (K2.Time - K1.Time) / Class.Speed or 0.5
+
+								EditJoint(
+									Joints[pose.Name],
+									Defaults[pose.Name] * pose.CFrame,
+									duration,
+									pose.EasingStyle,
+									pose.EasingDirection,
+									IsMotor[pose.Name]
+								)
 							end
 						end
-					end)
-					
-					if K == #Keyframes and Class.KeepLast > 0 then
-						Yield(Class.KeepLast)
+
+						if k == #Keyframes and Class.KeepLast > 0 then
+							Yield(Class.KeepLast)
+						end
+
+						Reached:Fire(K1.Name)
+					else
+						break
 					end
-					
-					Reached:Fire(K1.Name)
 				end
-				
+
 				Completion:Fire()
 			until not Class.Looped or Class.Stopped
-			
+
 			Class.IsPlaying = false
 		end)
 	end
-	
-	Class["Stop"] = function()
+
+	function Class:Stop()
 		Class.Stopped = true
 	end
-	
-	Class["AdjustSpeed"] = function(self, Speed)
-		if Speed and Speed < 0 then
-			Speed = Speed + (Speed * 2)
+
+	function Class:AdjustSpeed(Speed)
+		if Speed < 0 then
+			Speed += (Speed * 2)
 		end
 		Class.Speed = Speed or Class.Speed
 	end
-	
+
 	return Class
 end
-
-return Animator
