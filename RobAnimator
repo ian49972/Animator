@@ -1,3 +1,10 @@
+game:GetService("StarterGui"):SetCore("SendNotification", { 
+	Title = "RobNotification";
+	Text = "This script uses RobAnimator!";
+	Icon = "rbxthumb://type=Asset&id=118505657470802&w=150&h=150"})
+Duration = 15;
+
+
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 
@@ -273,3 +280,21 @@ getgenv().PlayKeyframeSequence = PlayKeyframeSequence
 getgenv().AdvancedKeyframePlayerLoaded = true
 
 _G.PlayKeyframeSequence = PlayKeyframeSequence
+
+-- ====================== USAGE ======================
+-- local anim = PlayKeyframeSequence(workspace.Rig, workspace.Keyframe, 1)
+--
+-- anim:AdjustSpeed(0.6)           -- seamless speed change
+-- anim.TimePosition = 1.2         -- scrub / seek
+-- anim.Priority = Enum.AnimationPriority.Action3
+-- anim.Weight = 0.85
+-- anim:Stop()
+-- anim:Play()
+--
+-- -- Layering example (upper body + lower body or action + movement):
+-- local action = PlayKeyframeSequence(rig, actionKS, 1)
+-- action.Priority = Enum.AnimationPriority.Action3
+-- local move = PlayKeyframeSequence(rig, movementKS, 1)
+-- move.Priority = Enum.AnimationPriority.Movement
+-- -- Joints only keyed in one animation are controlled by that animation.
+-- -- Shared joints use the highest priority (or blend if same priority).
