@@ -4,7 +4,6 @@ game:GetService("StarterGui"):SetCore("SendNotification", {
 	Icon = "rbxthumb://type=Asset&id=118505657470802&w=150&h=150"})
 Duration = 15;
 
-
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 
@@ -57,7 +56,6 @@ local function GetOrCreateController(model)
 	if RigControllers[model] then return RigControllers[model] end
 
 	local controller = { Tracks = {} }
-	DestroyExistingAnimator(model)
 
 	controller.Connection = RunService.Heartbeat:Connect(function()
 		if not model or not model.Parent then
@@ -173,6 +171,9 @@ local function PlayKeyframeSequence(Model, KeyframeSequence, SpeedMult)
 	SpeedMult = SpeedMult or 1
 	if not Model or not KeyframeSequence then return nil end
 
+	-- === DELETE ANIMATOR EVERY TIME THIS FUNCTION IS CALLED ===
+	DestroyExistingAnimator(Model)
+
 	local keyframes = {}
 	for _, kf in ipairs(KeyframeSequence:GetKeyframes()) do
 		table.insert(keyframes, {Time = kf.Time, KF = kf})
@@ -278,17 +279,18 @@ end
 
 getgenv().PlayKeyframeSequence = PlayKeyframeSequence
 getgenv().AdvancedKeyframePlayerLoaded = true
-
 _G.PlayKeyframeSequence = PlayKeyframeSequence
 
 -- ====================== USAGE ======================
 -- local anim = PlayKeyframeSequence(workspace.Rig, workspace.Keyframe, 1)
 --
 -- anim:AdjustSpeed(0.6)           -- seamless speed change
--- anim.TimePosition = 1.2         -- scrub / seek
+-- anim.TimePosition = 1.2-- scrub / seek
 -- anim.Priority = Enum.AnimationPriority.Action3
 -- anim.Weight = 0.85
+-- anim.Lenght
 -- anim:Stop()
+-- anim:RestoreAnimator().         -- Restores player Animator
 -- anim:Play()
 --
 -- -- Layering example (upper body + lower body or action + movement):
