@@ -325,7 +325,7 @@ getgenv().RobAnimatorLoaded = true
 -- [[
   Example
 if not getgenv().RobAnimatorLoaded then
-    loadstring(game:HttpGet("RobAnimatorLink"))()
+    loadstring(game:HttpGet("https://raw.githubusercontent.com/ian49972/Animator/refs/heads/main/RobAnimator"))()
     repeat task.wait() until getgenv().RobAnimatorLoaded
 end
   
