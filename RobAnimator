@@ -32,23 +32,19 @@ local PriorityValue = {
 }
 
 local RigControllers = {}
+local DEFAULT_FADE_TIME = 0.4
 
 local function DestroyExistingAnimator(model)
 	if not model then return end
 	local anim = model:FindFirstChildWhichIsA("Animator")
 	if anim then anim:Destroy() return end
-
 	local hum = model:FindFirstChildOfClass("Humanoid")
 	if hum then
 		anim = hum:FindFirstChildWhichIsA("Animator")
 		if anim then anim:Destroy() return end
 	end
-
 	for _, desc in ipairs(model:GetDescendants()) do
-		if desc:IsA("Animator") then
-			desc:Destroy()
-			return
-		end
+		if desc:IsA("Animator") then desc:Destroy() return end
 	end
 end
 
@@ -77,11 +73,11 @@ local function GetOrCreateController(model)
 					if track.Length > 0 then
 						track._timePosition = track._timePosition % track.Length
 					end
-				else
-					if track._timePosition >= track.Length then
-						track._timePosition = track.Length
-						track.IsPlaying = false
-					end
+				elseif track._timePosition >= track.Length then
+					track._timePosition = track.Length
+					track.IsPlaying = false
+					track.Ended:Fire()
+					track.Stopped:Fire()
 				end
 			end
 		end
@@ -89,54 +85,61 @@ local function GetOrCreateController(model)
 		local jointContributions = {}
 
 		for _, track in ipairs(controller.Tracks) do
-			if track.IsPlaying and (track.Weight or 1) > 0 and track._jointData then
-				local timePos = track._timePosition
-				local tWeight = track.Weight or 1
-				local tPrio = PriorityValue[track.Priority] or 3
+			if not track.IsPlaying or (track.Weight or 1) <= 0 or not track._jointData then continue end
 
-				for jointName, poses in pairs(track._jointData) do
-					if #poses == 0 then continue end
-
-					local lastPose = poses[1]
-					local nextPose = poses[1]
-					for i = 1, #poses - 1 do
-						if timePos >= poses[i].time and timePos < poses[i + 1].time then
-							lastPose = poses[i]
-							nextPose = poses[i + 1]
-							break
-						end
-					end
-					if timePos >= poses[#poses].time then
-						lastPose = poses[#poses]
-						nextPose = poses[#poses]
-					end
-
-					local alpha = 0
-					if nextPose.time > lastPose.time then
-						alpha = (timePos - lastPose.time) / (nextPose.time - lastPose.time)
-					end
-
-					local eased = TweenService:GetValue(alpha,
-						EasingStyleMap[nextPose.style] or Enum.EasingStyle.Linear,
-						EasingDirectionMap[nextPose.dir] or Enum.EasingDirection.InOut)
-
-					local finalCF = lastPose.cframe:Lerp(nextPose.cframe, eased)
-
-					if not jointContributions[jointName] then
-						jointContributions[jointName] = {}
-					end
-					table.insert(jointContributions[jointName], {
-						priority = tPrio, weight = tWeight, cframe = finalCF,
-						joint = lastPose.joint, jtype = lastPose.jtype
-					})
+			local fadeAlpha = 1
+			if track._fadeStart then
+				local elapsed = now - track._fadeStart
+				if track._fadingIn then
+					fadeAlpha = math.clamp(elapsed / DEFAULT_FADE_TIME, 0, 1)
+				else
+					fadeAlpha = 1 - math.clamp(elapsed / DEFAULT_FADE_TIME, 0, 1)
 				end
+			end
+
+			local timePos = track._timePosition
+			local tWeight = (track.Weight or 1) * fadeAlpha
+			local tPrio = PriorityValue[track.Priority] or 3
+
+			for jointName, poses in pairs(track._jointData) do
+				if #poses == 0 then continue end
+
+				local lastPose, nextPose = poses[1], poses[1]
+				for i = 1, #poses - 1 do
+					if timePos >= poses[i].time and timePos < poses[i + 1].time then
+						lastPose = poses[i]
+						nextPose = poses[i + 1]
+						break
+					end
+				end
+				if timePos >= poses[#poses].time then
+					lastPose = poses[#poses]
+					nextPose = poses[#poses]
+				end
+
+				local alpha = nextPose.time > lastPose.time and (timePos - lastPose.time) / (nextPose.time - lastPose.time) or 0
+				local eased = TweenService:GetValue(alpha,
+					EasingStyleMap[nextPose.style] or Enum.EasingStyle.Linear,
+					EasingDirectionMap[nextPose.dir] or Enum.EasingDirection.InOut)
+
+				local targetCF = lastPose.cframe:Lerp(nextPose.cframe, eased)
+
+				if not jointContributions[jointName] then jointContributions[jointName] = {} end
+				table.insert(jointContributions[jointName], {
+					priority = tPrio,
+					weight = tWeight,
+					cframe = targetCF,
+					joint = lastPose.joint,
+					jtype = lastPose.jtype,
+					trackFadeAlpha = fadeAlpha
+				})
 			end
 		end
 
 		for jointName, contribs in pairs(jointContributions) do
 			if #contribs == 0 then continue end
 
-			local maxPrio = contribs[1].priority
+			local maxPrio = -math.huge
 			for _, c in ipairs(contribs) do if c.priority > maxPrio then maxPrio = c.priority end end
 
 			local top = {}
@@ -150,15 +153,20 @@ local function GetOrCreateController(model)
 				local wsum = top[1].weight
 				for i = 2, #top do
 					local c = top[i]
-					local alpha = c.weight / (wsum + c.weight)
-					finalCF = finalCF:Lerp(c.cframe, alpha)
+					local a = c.weight / (wsum + c.weight)
+					finalCF = finalCF:Lerp(c.cframe, a)
 					wsum = wsum + c.weight
 				end
 			end
 
 			local sample = top[1]
+			local joint = sample.joint
+			local currentCF = joint.Transform
+			local applyAlpha = sample.weight or 1
+			finalCF = currentCF:Lerp(finalCF, applyAlpha)
+
 			if sample.jtype == "Motor6D" or sample.jtype == "Bone" then
-				sample.joint.Transform = finalCF
+				joint.Transform = finalCF
 			end
 		end
 	end)
@@ -181,11 +189,8 @@ local function PlayKeyframeSequence(Model, KeyframeSequence, SpeedMult)
 	if #keyframes == 0 then return nil end
 
 	local rawLength = keyframes[#keyframes].Time
-	local initialSpeed = SpeedMult
-
 	local jointData = {}
-	local motorMap = {}
-	local boneMap = {}
+	local motorMap, boneMap = {}, {}
 
 	local function ResolveJoint(pose)
 		local name = pose.Name
@@ -219,25 +224,64 @@ local function PlayKeyframeSequence(Model, KeyframeSequence, SpeedMult)
 
 	local controller = GetOrCreateController(Model)
 
+	for _, t in ipairs(controller.Tracks) do
+		if t.IsPlaying then
+			t._fadingIn = false
+			t._fadeStart = os.clock()
+		end
+	end
+
 	local track = {
-		Length = rawLength, Weight = 1, Priority = Enum.AnimationPriority.Action,
-		Looped = true, IsPlaying = false, Speed = initialSpeed, Model = Model,
-		_jointData = jointData, _timePosition = 0, _lastUpdateClock = os.clock(),
+		Length = rawLength,
+		Weight = 1,
+		Priority = Enum.AnimationPriority.Action,
+		Looped = true,
+		IsPlaying = false,
+		Speed = SpeedMult,
+		Model = Model,
+		_jointData = jointData,
+		_timePosition = 0,
+		_lastUpdateClock = os.clock(),
+		_fadeStart = os.clock(),
+		_fadingIn = true,
+
+		Stopped = Instance.new("BindableEvent"),
+		Ended = Instance.new("BindableEvent"),
+		KeyframeReached = Instance.new("BindableEvent"),
 
 		Play = function(self, speed)
 			if speed then self.Speed = speed end
-			if not self.IsPlaying then self.IsPlaying = true; self._lastUpdateClock = os.clock() end
+			if not self.IsPlaying then
+				self.IsPlaying = true
+				self._lastUpdateClock = os.clock()
+				self._fadeStart = os.clock()
+				self._fadingIn = true
+			end
 		end,
 
-		Stop = function(self) self.IsPlaying = false end,
+		Stop = function(self)
+			if self.IsPlaying then
+				self._fadingIn = false
+				self._fadeStart = os.clock()
+				task.delay(0.5, function()
+					if not self.IsPlaying then
+						self.Stopped:Fire()
+					end
+				end)
+			end
+		end,
 
-		AdjustSpeed = function(self, newSpeed) self.Speed = newSpeed or 1 end,
+		AdjustSpeed = function(self, newSpeed)
+			self.Speed = newSpeed or 1
+		end,
 
 		SetTimePosition = function(self, t)
 			self._timePosition = math.clamp(t or 0, 0, self.Length)
 		end,
 
-		GetTimePosition = function(self) return self._timePosition end,
+		GetTimePosition = function(self)
+			return self._timePosition
+		end,
 
 		RestoreAnimator = function(self)
 			local m = self.Model
@@ -245,10 +289,8 @@ local function PlayKeyframeSequence(Model, KeyframeSequence, SpeedMult)
 			local existing = m:FindFirstChildWhichIsA("Animator")
 			if existing then return existing end
 			local hum = m:FindFirstChildOfClass("Humanoid")
-			if hum then
-				existing = hum:FindFirstChildWhichIsA("Animator")
-				if existing then return existing end
-			end
+			if hum then existing = hum:FindFirstChildWhichIsA("Animator") end
+			if existing then return existing end
 			local animator = Instance.new("Animator")
 			animator.Parent = hum or m
 			return animator
@@ -270,21 +312,20 @@ local function PlayKeyframeSequence(Model, KeyframeSequence, SpeedMult)
 	})
 
 	table.insert(controller.Tracks, track)
-	track.IsPlaying = true
-	track._lastUpdateClock = os.clock()
+	track:Play()
 
 	return track
 end
 
 getgenv().PlayKeyframeSequence = PlayKeyframeSequence
-getgenv().AdvancedKeyframePlayerLoaded = true
 _G.PlayKeyframeSequence = PlayKeyframeSequence
+getgenv().AdvancedKeyframePlayerLoaded = true
 
 -- ====================== USAGE ======================
 -- local anim = PlayKeyframeSequence(workspace.Rig, workspace.Keyframe, 1)
 --
 -- anim:AdjustSpeed(0.6)           -- seamless speed change
--- anim.TimePosition = 1.2-- scrub / seek
+-- anim.TimePosition = 1.2 -- scrub / seek
 -- anim.Priority = Enum.AnimationPriority.Action3
 -- anim.Weight = 0.85
 -- anim.Lenght
