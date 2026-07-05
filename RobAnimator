@@ -171,7 +171,6 @@ local function PlayKeyframeSequence(Model, KeyframeSequence, SpeedMult)
 	SpeedMult = SpeedMult or 1
 	if not Model or not KeyframeSequence then return nil end
 
-	-- === DELETE ANIMATOR EVERY TIME THIS FUNCTION IS CALLED ===
 	DestroyExistingAnimator(Model)
 
 	local keyframes = {}
