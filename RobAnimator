@@ -32,6 +32,7 @@ local PriorityValue = {
 }
 
 local RigControllers = {}
+local AnimationCache = {}
 
 local function DestroyExistingAnimator(model)
 	if not model then return end
@@ -173,49 +174,155 @@ local function PlayKeyframeSequence(Model, KeyframeSequence, SpeedMult)
 
 	DestroyExistingAnimator(Model)
 
-	local keyframes = {}
+	local initialSpeed = SpeedMult
+
+local cached = AnimationCache[KeyframeSequence.Name]
+
+local keyframes
+local rawLength
+local jointData
+
+if not cached then
+	keyframes = {}
+
 	for _, kf in ipairs(KeyframeSequence:GetKeyframes()) do
 		table.insert(keyframes, {Time = kf.Time, KF = kf})
 	end
-	table.sort(keyframes, function(a,b) return a.Time < b.Time end)
-	if #keyframes == 0 then return nil end
 
-	local rawLength = keyframes[#keyframes].Time
-	local initialSpeed = SpeedMult
+	table.sort(keyframes, function(a,b)
+		return a.Time < b.Time
+	end)
 
-	local jointData = {}
+	if #keyframes == 0 then
+		return nil
+	end
+
+	rawLength = keyframes[#keyframes].Time
+else
+	rawLength = cached.Length
+end
+
+if cached then
+	local saved = cached.Data
+
+	jointData = {}
+
+	local motorMap = {}
+	local boneMap = {}
+
+	local function ResolveJoint(name)
+		if motorMap[name] then
+			return motorMap[name], "Motor6D"
+		end
+
+		if boneMap[name] then
+			return boneMap[name], "Bone"
+		end
+
+		for _, v in ipairs(Model:GetDescendants()) do
+			if v:IsA("Motor6D") and v.Part1 and v.Part1.Name == name then
+				motorMap[name] = v
+				return v, "Motor6D"
+			elseif v:IsA("Bone") and v.Name == name then
+				boneMap[name] = v
+				return v, "Bone"
+			end
+		end
+	end
+
+	for jointName, poses in pairs(saved) do
+		jointData[jointName] = {}
+
+		for _, pose in ipairs(poses) do
+			local joint, jtype = ResolveJoint(jointName)
+
+			if joint then
+				table.insert(jointData[jointName], {
+					time = pose.time,
+					cframe = pose.cframe,
+					style = pose.style,
+					dir = pose.dir,
+					joint = joint,
+					jtype = jtype
+				})
+			end
+		end
+	end
+
+else
+
+	jointData = {}
+
 	local motorMap = {}
 	local boneMap = {}
 
 	local function ResolveJoint(pose)
 		local name = pose.Name
-		if motorMap[name] then return motorMap[name], "Motor6D" end
-		if boneMap[name] then return boneMap[name], "Bone" end
+
+		if motorMap[name] then
+			return motorMap[name], "Motor6D"
+		end
+
+		if boneMap[name] then
+			return boneMap[name], "Bone"
+		end
+
 		for _, v in ipairs(Model:GetDescendants()) do
 			if v:IsA("Motor6D") and v.Part1 and v.Part1.Name == name then
-				motorMap[name] = v return v, "Motor6D"
+				motorMap[name] = v
+				return v, "Motor6D"
 			elseif v:IsA("Bone") and v.Name == name then
-				boneMap[name] = v return v, "Bone"
+				boneMap[name] = v
+				return v, "Bone"
 			end
 		end
-		return nil, nil
 	end
 
 	for _, entry in ipairs(keyframes) do
 		for _, pose in ipairs(entry.KF:GetDescendants()) do
 			if pose:IsA("Pose") and pose.Weight > 0 then
+
 				local joint, jtype = ResolveJoint(pose)
+
 				if joint then
-					if not jointData[pose.Name] then jointData[pose.Name] = {} end
+					if not jointData[pose.Name] then
+						jointData[pose.Name] = {}
+					end
+
 					table.insert(jointData[pose.Name], {
-						time = entry.Time, cframe = pose.CFrame,
-						style = pose.EasingStyle, dir = pose.EasingDirection,
-						joint = joint, jtype = jtype
+						time = entry.Time,
+						cframe = pose.CFrame,
+						style = pose.EasingStyle,
+						dir = pose.EasingDirection,
+						joint = joint,
+						jtype = jtype
 					})
 				end
 			end
 		end
 	end
+
+	local save = {}
+
+	for jointName, poses in pairs(jointData) do
+		save[jointName] = {}
+
+		for _, pose in ipairs(poses) do
+			table.insert(save[jointName], {
+				time = pose.time,
+				cframe = pose.cframe,
+				style = pose.style,
+				dir = pose.dir
+			})
+		end
+	end
+
+	AnimationCache[KeyframeSequence.Name] = {
+	Length = rawLength,
+	Data = save
+}
+
+end
 
 	local controller = GetOrCreateController(Model)
 
