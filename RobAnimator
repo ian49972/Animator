@@ -2,7 +2,7 @@ game:GetService("StarterGui"):SetCore("SendNotification", {
 	Title = "RobNotification";
 	Text = "This script uses RobAnimator!";
 	Icon = "rbxthumb://type=Asset&id=118505657470802&w=150&h=150";
-	Duration = 15;
+	Duration = 10;
 })
 
 local RunService = game:GetService("RunService")
@@ -36,17 +36,22 @@ local RigControllers = {}
 local AnimationCache = {}
 
 local function DestroyExistingAnimator(model)
-	if not model then return end
+	if not model then
+		return
+	end
 
 	local anim = model:FindFirstChildWhichIsA("Animator")
+
 	if anim then
 		anim:Destroy()
 		return
 	end
 
 	local hum = model:FindFirstChildOfClass("Humanoid")
+
 	if hum then
 		anim = hum:FindFirstChildWhichIsA("Animator")
+
 		if anim then
 			anim:Destroy()
 			return
@@ -61,69 +66,107 @@ local function DestroyExistingAnimator(model)
 	end
 end
 
-local function FindJoint(model, name, currentJoint)
-	if not model or not model.Parent then
-		return nil, nil
+local function AddJointToRegistry(controller, joint)
+	if not joint then
+		return
 	end
 
-	local currentPart
+	if joint:IsA("Motor6D") then
+		if joint.Part1 then
+			local name = joint.Part1.Name
 
-	if currentJoint and currentJoint:IsA("Motor6D") then
-		currentPart = currentJoint.Part1
+			if not controller.JointRegistry[name] then
+				controller.JointRegistry[name] = {}
+			end
+
+			controller.JointRegistry[name][joint] = true
+		end
+	elseif joint:IsA("Bone") then
+		local name = joint.Name
+
+		if not controller.JointRegistry[name] then
+			controller.JointRegistry[name] = {}
+		end
+
+		controller.JointRegistry[name][joint] = true
+	end
+end
+
+local function RemoveJointFromRegistry(controller, joint)
+	if not joint then
+		return
 	end
 
-	for _, v in ipairs(model:GetDescendants()) do
-		if v:IsA("Motor6D") and v.Part1 and v.Part1.Name == name then
-			if currentPart and v.Part1 == currentPart and v == currentJoint then
-				return v, "Motor6D"
+	if joint:IsA("Motor6D") then
+		if joint.Part1 then
+			local name = joint.Part1.Name
+			local list = controller.JointRegistry[name]
+
+			if list then
+				list[joint] = nil
+
+				if next(list) == nil then
+					controller.JointRegistry[name] = nil
+				end
+			end
+		end
+	elseif joint:IsA("Bone") then
+		local name = joint.Name
+		local list = controller.JointRegistry[name]
+
+		if list then
+			list[joint] = nil
+
+			if next(list) == nil then
+				controller.JointRegistry[name] = nil
 			end
 		end
 	end
+end
 
-	for _, v in ipairs(model:GetDescendants()) do
-		if v:IsA("Motor6D") and v.Part1 and v.Part1.Name == name then
-			return v, "Motor6D"
-		elseif v:IsA("Bone") and v.Name == name then
-			return v, "Bone"
+local function GetBestJoint(controller, name)
+	local list = controller.JointRegistry[name]
+
+	if not list then
+		return nil, nil
+	end
+
+	local fallback = nil
+	local fallbackType = nil
+
+	for joint in pairs(list) do
+		if joint.Parent then
+			if joint:IsA("Motor6D") then
+				if joint.Part1 and joint.Part1.Name == name then
+					return joint, "Motor6D"
+				end
+			elseif joint:IsA("Bone") and joint.Name == name then
+				fallback = joint
+				fallbackType = "Bone"
+			end
+		else
+			list[joint] = nil
 		end
+	end
+
+	if fallback then
+		return fallback, fallbackType
+	end
+
+	if next(list) == nil then
+		controller.JointRegistry[name] = nil
 	end
 
 	return nil, nil
 end
 
-local function RefreshJoints(model, jointData)
-	if not model or not model.Parent then
-		return
-	end
-
+local function BindJointData(controller, jointData)
 	for jointName, poses in pairs(jointData) do
-		local currentJoint = nil
-		local currentType = nil
+		local joint, jtype = GetBestJoint(controller, jointName)
 
 		for _, pose in ipairs(poses) do
-			if pose.joint then
-				currentJoint = pose.joint
-				currentType = pose.jtype
-				break
-			end
-		end
-
-		local newJoint, newType = FindJoint(model, jointName, currentJoint)
-
-		if newJoint then
-			if newJoint ~= currentJoint or newType ~= currentType then
-				for _, pose in ipairs(poses) do
-					pose.joint = newJoint
-					pose.jtype = newType
-				end
-			end
-		else
-			for _, pose in ipairs(poses) do
-				if pose.joint and not pose.joint.Parent then
-					pose.joint = nil
-					pose.jtype = nil
-				end
-			end
+			pose.joint = joint
+			pose.jtype = jtype
 		end
 	end
 end
@@ -134,8 +177,77 @@ local function GetOrCreateController(model)
 	end
 
 	local controller = {
-		Tracks = {}
+		Tracks = {};
+		JointRegistry = {};
 	}
+
+	for _, desc in ipairs(model:GetDescendants()) do
+		if desc:IsA("Motor6D") or desc:IsA("Bone") then
+			AddJointToRegistry(controller, desc)
+		end
+	end
+
+	controller.DescendantAddedConnection = model.DescendantAdded:Connect(function(desc)
+		if desc:IsA("Motor6D") or desc:IsA("Bone") then
+			AddJointToRegistry(controller, desc)
+
+			for _, track in ipairs(controller.Tracks) do
+				if track._jointData then
+					local name
+
+					if desc:IsA("Motor6D") then
+						if desc.Part1 then
+							name = desc.Part1.Name
+						end
+					else
+						name = desc.Name
+					end
+
+					if name and track._jointData[name] then
+						local joint, jtype = GetBestJoint(controller, name)
+
+						if joint then
+							for _, pose in ipairs(track._jointData[name]) do
+								pose.joint = joint
+								pose.jtype = jtype
+							end
+						end
+					end
+				end
+			end
+		end
+	end)
+
+	controller.DescendantRemovingConnection = model.DescendantRemoving:Connect(function(desc)
+		if desc:IsA("Motor6D") or desc:IsA("Bone") then
+			local affectedNames = {}
+
+			if desc:IsA("Motor6D") then
+				if desc.Part1 then
+					affectedNames[desc.Part1.Name] = true
+				end
+			else
+				affectedNames[desc.Name] = true
+			end
+
+			RemoveJointFromRegistry(controller, desc)
+
+			for name in pairs(affectedNames) do
+				local joint, jtype = GetBestJoint(controller, name)
+
+				for _, track in ipairs(controller.Tracks) do
+					local poses = track._jointData and track._jointData[name]
+
+					if poses then
+						for _, pose in ipairs(poses) do
+							pose.joint = joint
+							pose.jtype = jtype
+						end
+					end
+				end
+			end
+		end
+	end)
 
 	controller.Connection = RunService.Heartbeat:Connect(function()
 		if not model or not model.Parent then
@@ -143,14 +255,16 @@ local function GetOrCreateController(model)
 				controller.Connection:Disconnect()
 			end
 
+			if controller.DescendantAddedConnection then
+				controller.DescendantAddedConnection:Disconnect()
+			end
+
+			if controller.DescendantRemovingConnection then
+				controller.DescendantRemovingConnection:Disconnect()
+			end
+
 			RigControllers[model] = nil
 			return
-		end
-
-		for _, track in ipairs(controller.Tracks) do
-			if track._jointData then
-				RefreshJoints(model, track._jointData)
-			end
 		end
 
 		local now = os.clock()
@@ -167,11 +281,9 @@ local function GetOrCreateController(model)
 					if track.Length > 0 then
 						track._timePosition = track._timePosition % track.Length
 					end
-				else
-					if track._timePosition >= track.Length then
-						track._timePosition = track.Length
-						track.IsPlaying = false
-					end
+				elseif track._timePosition >= track.Length then
+					track._timePosition = track.Length
+					track.IsPlaying = false
 				end
 			end
 		end
@@ -236,7 +348,7 @@ local function GetOrCreateController(model)
 			end
 		end
 
-		for jointName, contribs in pairs(jointContributions) do
+		for _, contribs in pairs(jointContributions) do
 			if #contribs == 0 then
 				continue
 			end
@@ -391,6 +503,8 @@ local function PlayKeyframeSequence(Model, KeyframeSequence, SpeedMult)
 
 	local controller = GetOrCreateController(Model)
 
+	BindJointData(controller, jointData)
+
 	local track = {
 		Length = rawLength;
 		Weight = 1;
@@ -479,8 +593,6 @@ local function PlayKeyframeSequence(Model, KeyframeSequence, SpeedMult)
 	})
 
 	table.insert(controller.Tracks, track)
-
-	RefreshJoints(Model, jointData)
 
 	track.IsPlaying = true
 	track._lastUpdateClock = os.clock()
