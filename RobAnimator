@@ -2,7 +2,7 @@ game:GetService("StarterGui"):SetCore("SendNotification", {
 	Title = "RobNotification";
 	Text = "This script uses RobAnimator!";
 	Icon = "rbxthumb://type=Asset&id=118505657470802&w=150&h=150";
-	Duration = 10;
+	Duration = 3;
 })
 
 local RunService = game:GetService("RunService")
