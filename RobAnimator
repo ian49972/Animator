@@ -71,31 +71,28 @@ local function AddJointToRegistry(controller, joint)
 		return
 	end
 
+	local name
+
 	if joint:IsA("Motor6D") then
-		if joint.Part1 then
-			local name = joint.Part1.Name
-
-			local list = controller.JointRegistry[name]
-
-			if not list then
-				list = {}
-				controller.JointRegistry[name] = list
-			end
-
-			list[joint] = true
+		if not joint.Part1 then
+			return
 		end
+
+		name = joint.Part1.Name
 	elseif joint:IsA("Bone") then
-		local name = joint.Name
-
-		local list = controller.JointRegistry[name]
-
-		if not list then
-			list = {}
-			controller.JointRegistry[name] = list
-		end
-
-		list[joint] = true
+		name = joint.Name
+	else
+		return
 	end
+
+	local list = controller.JointRegistry[name]
+
+	if not list then
+		list = {}
+		controller.JointRegistry[name] = list
+	end
+
+	list[joint] = true
 end
 
 local function RemoveJointFromRegistry(controller, joint)
@@ -188,20 +185,23 @@ local function FindPoseIndex(poses, timePosition, currentIndex)
 		currentIndex = count - 1
 	end
 
-	if timePosition >= poses[currentIndex].time and timePosition < poses[currentIndex + 1].time then
+	if timePosition >= poses[currentIndex].time
+		and timePosition < poses[currentIndex + 1].time then
 		return currentIndex
 	end
 
 	if timePosition >= poses[currentIndex].time then
-		while currentIndex < count - 1 and timePosition >= poses[currentIndex + 1].time do
-			currentIndex = currentIndex + 1
+		while currentIndex < count - 1
+			and timePosition >= poses[currentIndex + 1].time do
+			currentIndex += 1
 		end
 
 		return currentIndex
 	end
 
-	while currentIndex > 1 and timePosition < poses[currentIndex].time do
-		currentIndex = currentIndex - 1
+	while currentIndex > 1
+		and timePosition < poses[currentIndex].time do
+		currentIndex -= 1
 	end
 
 	return currentIndex
@@ -215,6 +215,7 @@ local function GetOrCreateController(model)
 	local controller = {
 		Tracks = {};
 		JointRegistry = {};
+		Outputs = {};
 	}
 
 	for _, desc in ipairs(model:GetDescendants()) do
@@ -224,70 +225,76 @@ local function GetOrCreateController(model)
 	end
 
 	controller.DescendantAddedConnection = model.DescendantAdded:Connect(function(desc)
-		if desc:IsA("Motor6D") or desc:IsA("Bone") then
-			AddJointToRegistry(controller, desc)
+		if not desc:IsA("Motor6D") and not desc:IsA("Bone") then
+			return
+		end
 
-			local name
+		AddJointToRegistry(controller, desc)
 
-			if desc:IsA("Motor6D") then
-				if desc.Part1 then
-					name = desc.Part1.Name
-				end
-			else
-				name = desc.Name
+		local name
+
+		if desc:IsA("Motor6D") then
+			if desc.Part1 then
+				name = desc.Part1.Name
 			end
+		else
+			name = desc.Name
+		end
 
-			if name then
-				local joint, jtype = GetBestJoint(controller, name)
+		if not name then
+			return
+		end
 
-				if joint then
-					for _, track in ipairs(controller.Tracks) do
-						local data = track._jointData and track._jointData[name]
+		local joint, jtype = GetBestJoint(controller, name)
 
-						if data then
-							data.joint = joint
-							data.jtype = jtype
-						end
-					end
+		if joint then
+			for _, track in ipairs(controller.Tracks) do
+				local data = track._jointData and track._jointData[name]
+
+				if data then
+					data.joint = joint
+					data.jtype = jtype
 				end
 			end
 		end
 	end)
 
 	controller.DescendantRemovingConnection = model.DescendantRemoving:Connect(function(desc)
-		if desc:IsA("Motor6D") or desc:IsA("Bone") then
-			local name
+		if not desc:IsA("Motor6D") and not desc:IsA("Bone") then
+			return
+		end
 
-			if desc:IsA("Motor6D") then
-				if desc.Part1 then
-					name = desc.Part1.Name
-				end
-			else
-				name = desc.Name
+		local name
+
+		if desc:IsA("Motor6D") then
+			if desc.Part1 then
+				name = desc.Part1.Name
 			end
+		else
+			name = desc.Name
+		end
 
-			RemoveJointFromRegistry(controller, desc)
+		RemoveJointFromRegistry(controller, desc)
 
-			if name then
-				local joint, jtype = GetBestJoint(controller, name)
+		if not name then
+			return
+		end
 
-				for _, track in ipairs(controller.Tracks) do
-					local data = track._jointData and track._jointData[name]
+		local joint, jtype = GetBestJoint(controller, name)
 
-					if data then
-						data.joint = joint
-						data.jtype = jtype
-					end
-				end
+		for _, track in ipairs(controller.Tracks) do
+			local data = track._jointData and track._jointData[name]
+
+			if data then
+				data.joint = joint
+				data.jtype = jtype
 			end
 		end
 	end)
 
 	controller.Connection = RunService.Heartbeat:Connect(function()
 		if not model or not model.Parent then
-			if controller.Connection then
-				controller.Connection:Disconnect()
-			end
+			controller.Connection:Disconnect()
 
 			if controller.DescendantAddedConnection then
 				controller.DescendantAddedConnection:Disconnect()
@@ -308,17 +315,18 @@ local function GetOrCreateController(model)
 				local speed = track.Speed or 1
 				local delta = (now - track._lastUpdateClock) * speed
 
-				track._timePosition = track._timePosition + delta
+				track._timePosition += delta
 				track._lastUpdateClock = now
 
 				if track.Looped then
-					if track.Length > 0 then
-						if track._timePosition >= track.Length or track._timePosition < 0 then
-							track._timePosition = track._timePosition % track.Length
+					if track.Length > 0 and (
+						track._timePosition >= track.Length
+						or track._timePosition < 0
+					) then
+						track._timePosition %= track.Length
 
-							for _, data in pairs(track._jointData) do
-								data.index = 1
-							end
+						for _, data in pairs(track._jointData) do
+							data.index = 1
 						end
 					end
 				elseif track._timePosition >= track.Length then
@@ -333,12 +341,13 @@ local function GetOrCreateController(model)
 				continue
 			end
 
-			if (track.Weight or 1) <= 0 then
+			local trackWeight = track.Weight or 1
+
+			if trackWeight <= 0 then
 				continue
 			end
 
 			local timePosition = track._timePosition
-			local trackWeight = track.Weight or 1
 			local trackPriority = PriorityValue[track.Priority] or 3
 
 			for jointName, data in pairs(track._jointData) do
@@ -352,7 +361,10 @@ local function GetOrCreateController(model)
 				local joint = data.joint
 
 				if not joint or not joint.Parent then
-					local newJoint, newType = GetBestJoint(controller, jointName)
+					local newJoint, newType = GetBestJoint(
+						controller,
+						jointName
+					)
 
 					data.joint = newJoint
 					data.jtype = newType
@@ -384,13 +396,15 @@ local function GetOrCreateController(model)
 					lastPose = poses[index]
 					nextPose = poses[math.min(index + 1, count)]
 
-					if nextPose == lastPose then
+					if lastPose == nextPose then
 						alpha = 0
 					else
 						local duration = nextPose.time - lastPose.time
 
 						if duration > 0 then
-							alpha = (timePosition - lastPose.time) / duration
+							alpha = (
+								timePosition - lastPose.time
+							) / duration
 						else
 							alpha = 0
 						end
@@ -399,21 +413,21 @@ local function GetOrCreateController(model)
 					end
 				end
 
-				local eased = alpha
-
-				if alpha > 0 and alpha < 1 then
-					eased = TweenService:GetValue(
-						alpha,
-						nextPose.easingStyle,
-						nextPose.easingDirection
-					)
-				end
-
 				local finalCF
 
 				if lastPose == nextPose then
 					finalCF = lastPose.cframe
 				else
+					local eased = alpha
+
+					if alpha > 0 and alpha < 1 then
+						eased = TweenService:GetValue(
+							alpha,
+							nextPose.easingStyle,
+							nextPose.easingDirection
+						)
+					end
+
 					finalCF = lastPose.cframe:Lerp(
 						nextPose.cframe,
 						eased
@@ -429,27 +443,28 @@ local function GetOrCreateController(model)
 						cframe = finalCF;
 						jtype = data.jtype;
 					}
-				else
-					if trackPriority > previous.priority then
-						controller.Outputs[joint] = {
-							priority = trackPriority;
-							weight = trackWeight;
-							cframe = finalCF;
-							jtype = data.jtype;
-						}
-					elseif trackPriority == previous.priority then
-						local totalWeight = previous.weight + trackWeight
+				elseif trackPriority > previous.priority then
+					controller.Outputs[joint] = {
+						priority = trackPriority;
+						weight = trackWeight;
+						cframe = finalCF;
+						jtype = data.jtype;
+					}
+				elseif trackPriority == previous.priority then
+					local totalWeight =
+						previous.weight + trackWeight
 
-						if totalWeight > 0 then
-							local blendAlpha = trackWeight / totalWeight
+					if totalWeight > 0 then
+						local blendAlpha =
+							trackWeight / totalWeight
 
-							previous.cframe = previous.cframe:Lerp(
+						previous.cframe =
+							previous.cframe:Lerp(
 								finalCF,
 								blendAlpha
 							)
 
-							previous.weight = totalWeight
-						end
+						previous.weight = totalWeight
 					end
 				end
 			end
@@ -458,15 +473,11 @@ local function GetOrCreateController(model)
 		for joint, output in pairs(controller.Outputs) do
 			if joint.Parent then
 				joint.Transform = output.cframe
-			else
-				controller.Outputs[joint] = nil
 			end
 		end
 
 		table.clear(controller.Outputs)
 	end)
-
-	controller.Outputs = {}
 
 	RigControllers[model] = controller
 
@@ -479,12 +490,10 @@ local function BuildAnimationData(KeyframeSequence)
 	if cached then
 		local jointData = {}
 
-		for jointName, cachedData in pairs(cached.Data) do
-			local poses = {}
+		for jointName, cachedPoses in pairs(cached.Data) do
+			local poses = table.create(#cachedPoses)
 
-			for i = 1, #cachedData do
-				local pose = cachedData[i]
-
+			for i, pose in ipairs(cachedPoses) do
 				poses[i] = {
 					time = pose.time;
 					cframe = pose.cframe;
@@ -535,11 +544,19 @@ local function BuildAnimationData(KeyframeSequence)
 					jointData[pose.Name] = data
 				end
 
+				local easingStyle =
+					EasingStyleMap[pose.EasingStyle]
+					or Enum.EasingStyle.Linear
+
+				local easingDirection =
+					EasingDirectionMap[pose.EasingDirection]
+					or Enum.EasingDirection.InOut
+
 				data.poses[#data.poses + 1] = {
 					time = time;
 					cframe = pose.CFrame;
-					easingStyle = pose.EasingStyle;
-					easingDirection = pose.EasingDirection;
+					easingStyle = easingStyle;
+					easingDirection = easingDirection;
 				}
 			end
 		end
@@ -548,7 +565,7 @@ local function BuildAnimationData(KeyframeSequence)
 	local save = {}
 
 	for jointName, data in pairs(jointData) do
-		local savedPoses = {}
+		local savedPoses = table.create(#data.poses)
 
 		for i, pose in ipairs(data.poses) do
 			savedPoses[i] = {
@@ -579,7 +596,8 @@ local function PlayKeyframeSequence(Model, KeyframeSequence, SpeedMult)
 
 	DestroyExistingAnimator(Model)
 
-	local rawLength, jointData = BuildAnimationData(KeyframeSequence)
+	local rawLength, jointData =
+		BuildAnimationData(KeyframeSequence)
 
 	if not rawLength or not jointData then
 		return nil
@@ -645,16 +663,19 @@ local function PlayKeyframeSequence(Model, KeyframeSequence, SpeedMult)
 				return nil
 			end
 
-			local existing = m:FindFirstChildWhichIsA("Animator")
+			local existing =
+				m:FindFirstChildWhichIsA("Animator")
 
 			if existing then
 				return existing
 			end
 
-			local hum = m:FindFirstChildOfClass("Humanoid")
+			local hum =
+				m:FindFirstChildOfClass("Humanoid")
 
 			if hum then
-				existing = hum:FindFirstChildWhichIsA("Animator")
+				existing =
+					hum:FindFirstChildWhichIsA("Animator")
 
 				if existing then
 					return existing
@@ -704,23 +725,3 @@ end
 getgenv().PlayKeyframeSequence = PlayKeyframeSequence
 getgenv().AdvancedKeyframePlayerLoaded = true
 _G.PlayKeyframeSequence = PlayKeyframeSequence
-
--- ====================== USAGE ======================
--- local anim = PlayKeyframeSequence(workspace.Rig, workspace.Keyframe, 1)
---
--- anim:AdjustSpeed(0.6)           -- seamless speed change
--- anim.TimePosition = 1.2 -- scrub / seek
--- anim.Priority = Enum.AnimationPriority.Action3
--- anim.Weight = 0.85
--- anim.Length
--- anim:Stop()
--- anim:RestoreAnimator().         -- Restores player Animator
--- anim:Play()
---
--- -- Layering example (upper body + lower body or action + movement):
--- local action = PlayKeyframeSequence(rig, actionKS, 1)
--- action.Priority = Enum.AnimationPriority.Action3
--- local move = PlayKeyframeSequence(rig, movementKS, 1)
--- move.Priority = Enum.AnimationPriority.Movement
--- -- Joints only keyed in one animation are controlled by that animation.
--- -- Shared joints use the highest priority (or blend if same priority).
