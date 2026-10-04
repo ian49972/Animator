@@ -207,6 +207,106 @@ local function FindPoseIndex(poses, timePosition, currentIndex)
 	return currentIndex
 end
 
+local function FireTimelineEntry(track, keyframe)
+	-- KeyframeReached follows Roblox's behavior: ordinary keyframes named
+	-- "Keyframe" are ignored, while renamed keyframes report their name.
+	if keyframe.name ~= "Keyframe" and track._keyframeReachedEvent then
+		track._keyframeReachedEvent:Fire(keyframe.name)
+	end
+
+	for _, marker in ipairs(keyframe.markers) do
+		local signal = track._markerSignals[marker.name]
+
+		if signal then
+			signal:Fire(marker.value)
+		end
+	end
+end
+
+local function FireTimelineEventsAtTime(track, timePosition)
+	for _, keyframe in ipairs(track._keyframes) do
+		if keyframe.time == timePosition then
+			FireTimelineEntry(track, keyframe)
+		elseif keyframe.time > timePosition then
+			break
+		end
+	end
+end
+
+local function FireTimelineEventsBetween(track, fromTime, toTime)
+	if fromTime == toTime or #track._keyframes == 0 then
+		return
+	end
+
+	local length = track.Length
+	local forward = toTime > fromTime
+	local looped = track.Looped and length > 0
+	local occurrences = {}
+
+	for order, keyframe in ipairs(track._keyframes) do
+		local firstCycle = 0
+		local lastCycle = -1
+
+		if looped then
+			if forward then
+				firstCycle = math.floor((fromTime - keyframe.time) / length) + 1
+				lastCycle = math.floor((toTime - keyframe.time) / length)
+			else
+				firstCycle = math.ceil((toTime - keyframe.time) / length)
+				lastCycle = math.ceil((fromTime - keyframe.time) / length) - 1
+			end
+		else
+			firstCycle = 0
+			lastCycle = 0
+		end
+
+		for cycle = firstCycle, lastCycle do
+			local occurrence = keyframe.time + cycle * length
+			local crossed
+
+			if forward then
+				crossed = occurrence > fromTime and occurrence <= toTime
+			else
+				crossed = occurrence >= toTime and occurrence < fromTime
+			end
+
+			if crossed then
+				table.insert(occurrences, {
+					position = occurrence;
+					keyframe = keyframe;
+					order = order;
+				})
+			end
+		end
+	end
+
+	table.sort(occurrences, function(a, b)
+		if a.position ~= b.position then
+			if forward then
+				return a.position < b.position
+			end
+
+			return a.position > b.position
+		end
+
+		-- At a loop boundary, the end keyframe is reached before the next
+		-- cycle's time-zero keyframe (and in the opposite order in reverse).
+		if a.keyframe.time ~= b.keyframe.time then
+			if forward then
+				return a.keyframe.time > b.keyframe.time
+			end
+
+			return a.keyframe.time < b.keyframe.time
+		end
+
+		return a.order < b.order
+	end)
+
+	for _, occurrence in ipairs(occurrences) do
+		FireTimelineEntry(track, occurrence.keyframe)
+	end
+end
+
 local function GetOrCreateController(model)
 	if RigControllers[model] then
 		return RigControllers[model]
@@ -312,26 +412,44 @@ local function GetOrCreateController(model)
 
 		for _, track in ipairs(controller.Tracks) do
 			if track.IsPlaying then
+				if track._pendingStartEvent then
+					track._pendingStartEvent = false
+					FireTimelineEventsAtTime(track, track._timePosition)
+				end
+
 				local speed = track.Speed or 1
 				local delta = (now - track._lastUpdateClock) * speed
-
-				track._timePosition += delta
+				local previousTime = track._timePosition
+				local nextTime = previousTime + delta
 				track._lastUpdateClock = now
 
-				if track.Looped then
-					if track.Length > 0 and (
-						track._timePosition >= track.Length
-						or track._timePosition < 0
-					) then
-						track._timePosition %= track.Length
+				if track.Looped and track.Length > 0 then
+					FireTimelineEventsBetween(track, previousTime, nextTime)
+					track._timePosition = nextTime % track.Length
 
+					if nextTime >= track.Length or nextTime < 0 then
 						for _, data in pairs(track._jointData) do
 							data.index = 1
 						end
 					end
-				elseif track._timePosition >= track.Length then
+				elseif not track.Looped and nextTime >= track.Length then
+					FireTimelineEventsBetween(
+						track,
+						previousTime,
+						track.Length
+					)
 					track._timePosition = track.Length
 					track.IsPlaying = false
+				elseif not track.Looped and nextTime <= 0 then
+					FireTimelineEventsBetween(track, previousTime, 0)
+					track._timePosition = 0
+
+					if delta < 0 then
+						track.IsPlaying = false
+					end
+				else
+					FireTimelineEventsBetween(track, previousTime, nextTime)
+					track._timePosition = nextTime
 				end
 			end
 		end
@@ -510,7 +628,7 @@ local function BuildAnimationData(KeyframeSequence)
 			}
 		end
 
-		return cached.Length, jointData
+		return cached.Length, jointData, cached.Keyframes or {}
 	end
 
 	local keyframes = KeyframeSequence:GetKeyframes()
@@ -519,12 +637,42 @@ local function BuildAnimationData(KeyframeSequence)
 		return nil, nil
 	end
 
+	local originalOrder = {}
+
+	for index, keyframe in ipairs(keyframes) do
+		originalOrder[keyframe] = index
+	end
+
 	table.sort(keyframes, function(a, b)
+		if a.Time == b.Time then
+			return originalOrder[a] < originalOrder[b]
+		end
+
 		return a.Time < b.Time
 	end)
 
 	local rawLength = keyframes[#keyframes].Time
 	local jointData = {}
+	local timelineKeyframes = table.create(#keyframes)
+
+	for _, keyframe in ipairs(keyframes) do
+		local markers = {}
+
+		for _, marker in ipairs(keyframe:GetDescendants()) do
+			if marker:IsA("KeyframeMarker") then
+				markers[#markers + 1] = {
+					name = marker.Name;
+					value = marker.Value;
+				}
+			end
+		end
+
+		timelineKeyframes[#timelineKeyframes + 1] = {
+			name = keyframe.Name;
+			time = keyframe.Time;
+			markers = markers;
+		}
+	end
 
 	for _, keyframe in ipairs(keyframes) do
 		local time = keyframe.Time
@@ -582,9 +730,10 @@ local function BuildAnimationData(KeyframeSequence)
 	AnimationCache[KeyframeSequence] = {
 		Length = rawLength;
 		Data = save;
+		Keyframes = timelineKeyframes;
 	}
 
-	return rawLength, jointData
+	return rawLength, jointData, timelineKeyframes
 end
 
 local function PlayKeyframeSequence(Model, KeyframeSequence, SpeedMult)
@@ -596,7 +745,7 @@ local function PlayKeyframeSequence(Model, KeyframeSequence, SpeedMult)
 
 	DestroyExistingAnimator(Model)
 
-	local rawLength, jointData =
+	local rawLength, jointData, keyframes =
 		BuildAnimationData(KeyframeSequence)
 
 	if not rawLength or not jointData then
@@ -607,6 +756,8 @@ local function PlayKeyframeSequence(Model, KeyframeSequence, SpeedMult)
 
 	BindJointData(controller, jointData)
 
+	local keyframeReachedEvent = Instance.new("BindableEvent")
+
 	local track = {
 		Length = rawLength;
 		Weight = 1;
@@ -615,7 +766,12 @@ local function PlayKeyframeSequence(Model, KeyframeSequence, SpeedMult)
 		IsPlaying = true;
 		Speed = SpeedMult;
 		Model = Model;
+		KeyframeReached = keyframeReachedEvent.Event;
 		_jointData = jointData;
+		_keyframes = keyframes or {};
+		_keyframeReachedEvent = keyframeReachedEvent;
+		_markerSignals = {};
+		_pendingStartEvent = true;
 		_timePosition = 0;
 		_lastUpdateClock = os.clock();
 
@@ -654,6 +810,87 @@ local function PlayKeyframeSequence(Model, KeyframeSequence, SpeedMult)
 
 		GetTimePosition = function(self)
 			return self._timePosition
+		end;
+
+		GetMarkerReachedSignal = function(self, markerName)
+			if type(markerName) ~= "string" then
+				error("markerName must be a string", 2)
+			end
+
+			local signal = self._markerSignals[markerName]
+
+			if not signal then
+				signal = Instance.new("BindableEvent")
+				self._markerSignals[markerName] = signal
+			end
+
+			return signal.Event
+		end;
+
+		GetTimeOfKeyframe = function(self, keyframeName)
+			if type(keyframeName) ~= "string" then
+				error("keyframeName must be a string", 2)
+			end
+
+			for _, keyframe in ipairs(self._keyframes) do
+				if keyframe.name == keyframeName then
+					return keyframe.time
+				end
+			end
+
+			return nil
+		end;
+
+		GetKeyframeName = function(self, timePosition)
+			local position = timePosition
+
+			if position == nil then
+				position = self._timePosition
+			end
+
+			local previousKeyframe
+
+			for _, keyframe in ipairs(self._keyframes) do
+				if keyframe.time <= position then
+					previousKeyframe = keyframe
+				else
+					break
+				end
+			end
+
+			return previousKeyframe and previousKeyframe.name or nil
+		end;
+
+		GetKeyframeNames = function(self)
+			local names = table.create(#self._keyframes)
+
+			for index, keyframe in ipairs(self._keyframes) do
+				names[index] = keyframe.name
+			end
+
+			return names
+		end;
+
+		Destroy = function(self)
+			self.IsPlaying = false
+
+			for index, existingTrack in ipairs(controller.Tracks) do
+				if existingTrack == self then
+					table.remove(controller.Tracks, index)
+					break
+				end
+			end
+
+			if self._keyframeReachedEvent then
+				self._keyframeReachedEvent:Destroy()
+				self._keyframeReachedEvent = nil
+			end
+
+			for _, signal in pairs(self._markerSignals) do
+				signal:Destroy()
+			end
+
+			table.clear(self._markerSignals)
 		end;
 
 		RestoreAnimator = function(self)
